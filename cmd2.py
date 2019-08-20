@@ -51,7 +51,6 @@ except ImportError:
     from enum import Enum
 
 import pyparsing
-import pyperclip
 
 # Collection is a container that is sizable and iterable
 # It was introduced in Python 3.6. We will try to import it, otherwise use our implementation
@@ -78,13 +77,6 @@ except ImportError:
                         any("__contains__" in B.__dict__ for B in C.__mro__):
                     return True
             return NotImplemented
-
-# Newer versions of pyperclip are released as a single file, but older versions had a more complicated structure
-try:
-    from pyperclip.exceptions import PyperclipException
-except ImportError:
-    # noinspection PyUnresolvedReferences
-    from pyperclip import PyperclipException
 
 # next(it) gets next item of iterator it. This is a replacement for calling it.next() in Python 2 and next(it) in Py3
 from six import next
@@ -216,17 +208,6 @@ if six.PY3:
     FILE_NOT_FOUND_ERROR = FileNotFoundError
 else:
     BROKEN_PIPE_ERROR = FILE_NOT_FOUND_ERROR = IOError
-
-# On some systems, pyperclip will import gtk for its clipboard functionality.
-# The following code is a workaround for gtk interfering with printing from a background
-# thread while the CLI thread is blocking in raw_input() in Python 2 on Linux.
-if six.PY2 and sys.platform.startswith('lin'):
-    try:
-        # noinspection PyUnresolvedReferences
-        import gtk
-        gtk.set_interactive(0)
-    except ImportError:
-        pass
 
 
 __version__ = '0.8.7'
@@ -619,48 +600,6 @@ def options(option_list, arg_desc="arg"):
         return new_func
 
     return option_setup
-
-
-# Can we access the clipboard?  Should always be true on Windows and Mac, but only sometimes on Linux
-# noinspection PyUnresolvedReferences
-try:
-    # Get the version of the pyperclip module as a float
-    pyperclip_ver = float('.'.join(pyperclip.__version__.split('.')[:2]))
-
-    # The extraneous output bug in pyperclip on Linux using xclip was fixed in more recent versions of pyperclip
-    if sys.platform.startswith('linux') and pyperclip_ver < 1.6:
-        # Avoid extraneous output to stderr from xclip when clipboard is empty at cost of overwriting clipboard contents
-        pyperclip.copy('')
-    else:
-        # Try getting the contents of the clipboard
-        _ = pyperclip.paste()
-except PyperclipException:
-    can_clip = False
-else:
-    can_clip = True
-
-
-def get_paste_buffer():
-    """Get the contents of the clipboard / paste buffer.
-
-    :return: str - contents of the clipboard
-    """
-    pb_str = pyperclip.paste()
-
-    # If value returned from the clipboard is unicode and this is Python 2, convert to a "normal" Python 2 string first
-    if six.PY2 and not isinstance(pb_str, str):
-        import unicodedata
-        pb_str = unicodedata.normalize('NFKD', pb_str).encode('ascii', 'ignore')
-
-    return pb_str
-
-
-def write_to_paste_buffer(txt):
-    """Copy text to the clipboard / paste buffer.
-
-    :param txt: str - text to copy to the clipboard
-    """
-    pyperclip.copy(txt)
 
 
 class ParsedString(str):
@@ -2577,8 +2516,8 @@ class Cmd(cmd.Cmd):
                 # Re-raise the exception
                 raise ex
         elif statement.parsed.output:
-            if (not statement.parsed.outputTo) and (not can_clip):
-                raise EnvironmentError('Cannot redirect to paste buffer; install ``xclip`` and re-run to enable')
+            if (not statement.parsed.outputTo):
+                raise EnvironmentError('Cannot redirect to paste buffer')
             self.kept_state = Statekeeper(self, ('stdout',))
             self.kept_sys = Statekeeper(sys, ('stdout',))
             self.redirecting = True
@@ -2587,10 +2526,6 @@ class Cmd(cmd.Cmd):
                 if statement.parsed.output == 2 * self.redirector:
                     mode = 'a'
                 sys.stdout = self.stdout = open(os.path.expanduser(statement.parsed.outputTo), mode)
-            else:
-                sys.stdout = self.stdout = tempfile.TemporaryFile(mode="w+")
-                if statement.parsed.output == '>>':
-                    self.poutput(get_paste_buffer())
 
     def _restore_output(self, statement):
         """Handles restoring state after output redirection as well as the actual pipe operation if present.
@@ -2602,7 +2537,6 @@ class Cmd(cmd.Cmd):
             # If we redirected output to the clipboard
             if statement.parsed.output and not statement.parsed.outputTo:
                 self.stdout.seek(0)
-                write_to_paste_buffer(self.stdout.read())
 
             try:
                 # Close the file or pipe that stdout was redirected to
